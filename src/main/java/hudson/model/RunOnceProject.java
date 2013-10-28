@@ -22,9 +22,9 @@ public class RunOnceProject extends Project<RunOnceProject, RunOnceBuild> implem
     }
 
     @Restricted(NoExternalUse.class)
-    @Extension(ordinal=1000)
     public static final DescriptorImpl DESCRIPTOR = new DescriptorImpl();
 
+    @Extension(ordinal=1000)
     public static final class DescriptorImpl extends AbstractProjectDescriptor {
         public String getDisplayName() {
             return "Merge Requiest Build Job";
