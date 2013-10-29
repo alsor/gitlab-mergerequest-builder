@@ -105,21 +105,28 @@ public class BuildMergeRequestAction implements RootAction {
             }
 
             @Override
-            public boolean perform(AbstractBuild<?, ?> abstractBuild, Launcher launcher, BuildListener listener) throws InterruptedException, IOException {
-
-                Build build = (Build) abstractBuild;
-
-                Jedis jedis = new Jedis("localhost");
+            public boolean perform(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener)
+                    throws InterruptedException, IOException {
 
                 ModelBuilder modelBuilder = new ModelBuilder();
                 StringWriter w = new StringWriter();
-                Model<Build> buildModel = modelBuilder.get(Build.class);
-                TreePruner pruner = new TreePruner.ByDepth(Integer.MAX_VALUE);
+                Model buildModel = modelBuilder.get(build.getClass());
+
+                // we need to exclude any jenkins URLs from the build result.
+                // the first problem is that project is deleted after the build so URLs will be stale anyway
+                // and the second problem is that if Jenkins web location is not configured in the global settings
+                // then we will get an exception trying to determine absolute URL
+                List<String> excepts = new ArrayList<String>();
+                excepts.add("absoluteUrl");
+                excepts.add("url");
+                TreePruner pruner = new ByDepthWithExcept(0, excepts);
+
                 DataWriter dataWriter = Flavor.JSON.createDataWriter(build, w);
                 buildModel.writeTo(build, pruner, dataWriter);
+                String json = w.toString();
 
-
-                jedis.rpush("resque:gitlab:queue:build_result", w.toString());
+                Jedis jedis = new Jedis("localhost");
+                jedis.rpush("resque:gitlab:queue:build_result", json);
 
                 return true;
             }
@@ -128,6 +135,37 @@ public class BuildMergeRequestAction implements RootAction {
         project.scheduleBuild(null);
 
         rsp.getWriter().println("merge request id: " + json.get("mergeRequestId"));
+    }
+
+    // Turns out that the tree-traversing algorithm in the Model is dependent on the fact that the TreePruner
+    // object contains some kind of reduction rule to prevent infinite recursion. So we are using ByDepth code here
+    // and just adding capabilities to skip properties by name
+    public static class ByDepthWithExcept extends TreePruner {
+        final int n;
+        final List<String> excepts;
+        private ByDepthWithExcept next;
+
+
+        public ByDepthWithExcept(int n, List<String> excepts) {
+            this.n = n;
+            this.excepts = excepts;
+        }
+
+        private ByDepthWithExcept next() {
+            if (next==null)
+                next = new ByDepthWithExcept(n+1, excepts);
+            return next;
+        }
+
+        @Override
+        public TreePruner accept(Object node, Property prop) {
+            if (excepts.contains(prop.name)) return null; // except
+
+            if (prop.visibility < n) return null;    // not visible
+
+            if (prop.inline)    return this;
+            return next();
+        }
     }
 
     private static Project findProjectByUri(URIish toFind) {
