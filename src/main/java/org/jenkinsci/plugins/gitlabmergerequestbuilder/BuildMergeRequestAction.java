@@ -2,13 +2,23 @@ package org.jenkinsci.plugins.gitlabmergerequestbuilder;
 
 import hudson.Extension;
 import hudson.Launcher;
-import hudson.model.*;
-import hudson.plugins.git.*;
+import hudson.model.BuildListener;
+import hudson.model.RootAction;
+import hudson.model.RunOnceProject;
+import hudson.model.AbstractBuild;
+import hudson.model.Project;
+import hudson.plugins.git.BranchSpec;
+import hudson.plugins.git.SubmoduleConfig;
+import hudson.plugins.git.GitSCM;
+import hudson.plugins.git.GitStatus;
+import hudson.plugins.git.UserMergeOptions;
+import hudson.plugins.git.UserRemoteConfig;
 import hudson.plugins.git.util.DefaultBuildChooser;
 import hudson.scm.SCM;
 import hudson.tasks.BuildStepMonitor;
 import hudson.tasks.Builder;
 import hudson.tasks.Notifier;
+import hudson.tasks.Shell;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -19,7 +29,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.logging.Logger;
 
-import hudson.tasks.Shell;
 import jenkins.model.Jenkins;
 import net.sf.json.JSONObject;
 
@@ -27,8 +36,13 @@ import org.eclipse.jgit.transport.RemoteConfig;
 import org.eclipse.jgit.transport.URIish;
 import org.kohsuke.stapler.StaplerRequest;
 import org.kohsuke.stapler.StaplerResponse;
+import org.kohsuke.stapler.export.DataWriter;
+import org.kohsuke.stapler.export.Flavor;
+import org.kohsuke.stapler.export.Model;
+import org.kohsuke.stapler.export.ModelBuilder;
+import org.kohsuke.stapler.export.Property;
+import org.kohsuke.stapler.export.TreePruner;
 
-import org.kohsuke.stapler.export.*;
 import redis.clients.jedis.Jedis;
 
 @Extension
@@ -37,6 +51,8 @@ public class BuildMergeRequestAction implements RootAction {
     private static final Logger logger = Logger.getLogger(BuildMergeRequestAction.class.getName());
     private static final String TARGET_REPO = "targetRepo";
     private static final String SOURCE_REPO = "sourceRepo";
+    private static final String DEFAULT_REDIS_HOST = "localhost";
+    private static final int DEFAULT_REDIS_PORT = 6379;
 
     public String getIconFileName() {
         return null;
@@ -51,6 +67,17 @@ public class BuildMergeRequestAction implements RootAction {
     }
 
 
+    private static String createUniqueName(String buildId) {
+        String base = "Build Merge Request #" + buildId;
+        int suffix = 1;
+        String name = base;
+        while (Jenkins.getInstance().getItem(name) != null) {
+            suffix++;
+            name = base + "(" + suffix + ")";
+        }
+        return name;
+    }
+
     public void doBuild(StaplerRequest req, StaplerResponse rsp) throws IOException, URISyntaxException {
 
         JSONObject json = JSONObject.fromObject(slurp(req));
@@ -61,8 +88,11 @@ public class BuildMergeRequestAction implements RootAction {
         String targetUri = json.getString("target_uri");
         String sourceUri = json.getString("source_uri");
 
-        String name = "p2";
-        RunOnceProject project = (RunOnceProject) Jenkins.getInstance().createProject(RunOnceProject.DESCRIPTOR, name);
+        String name = createUniqueName(buildId);
+
+        final RunOnceProject.DescriptorImpl descriptor = Jenkins.getInstance().getDescriptorByType(RunOnceProject.DescriptorImpl.class);
+
+        RunOnceProject project = (RunOnceProject) Jenkins.getInstance().createProject(descriptor, name);
 
         List<UserRemoteConfig> userRemoteConfigs = new ArrayList<UserRemoteConfig>();
         userRemoteConfigs.add(new UserRemoteConfig(targetUri, TARGET_REPO, null));
@@ -125,7 +155,14 @@ public class BuildMergeRequestAction implements RootAction {
                 buildModel.writeTo(build, pruner, dataWriter);
                 String json = w.toString();
 
-                Jedis jedis = new Jedis("localhost");
+                String redisHost = descriptor.getRedisHost();
+                if (redisHost == null || redisHost == "") redisHost = DEFAULT_REDIS_HOST;
+                int redisPort = descriptor.getRedisPort();
+                if (redisPort == 0) redisPort = DEFAULT_REDIS_PORT;
+                logger.info("using Redis host: " + redisHost);
+                logger.info("using Redis port: " + redisPort);
+
+                Jedis jedis = new Jedis(redisHost, redisPort);
                 jedis.rpush("resque:gitlab:queue:build_result", json);
 
                 return true;
