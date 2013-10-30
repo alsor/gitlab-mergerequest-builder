@@ -24,14 +24,18 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.net.URISyntaxException;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.logging.Logger;
 
+import hudson.tasks.test.AbstractTestResultAction;
 import jenkins.model.Jenkins;
 import net.sf.json.JSONObject;
 
+import org.apache.commons.codec.digest.DigestUtils;
 import org.eclipse.jgit.transport.RemoteConfig;
 import org.eclipse.jgit.transport.URIish;
 import org.kohsuke.stapler.StaplerRequest;
@@ -82,15 +86,16 @@ public class BuildMergeRequestAction implements RootAction {
 
         JSONObject json = JSONObject.fromObject(slurp(req));
 
-        String buildId = json.getString("build_id");
-        String targetSha = json.getString("target_sha");
-        String sourceSha = json.getString("source_sha");
-        String targetUri = json.getString("target_uri");
-        String sourceUri = json.getString("source_uri");
+        final String buildId = json.getString("build_id");
+        final String targetSha = json.getString("target_sha");
+        final String sourceSha = json.getString("source_sha");
+        final String targetUri = json.getString("target_uri");
+        final String sourceUri = json.getString("source_uri");
 
         String name = createUniqueName(buildId);
 
-        final RunOnceProject.DescriptorImpl descriptor = Jenkins.getInstance().getDescriptorByType(RunOnceProject.DescriptorImpl.class);
+        final RunOnceProject.DescriptorImpl descriptor = Jenkins.getInstance().
+                getDescriptorByType(RunOnceProject.DescriptorImpl.class);
 
         RunOnceProject project = (RunOnceProject) Jenkins.getInstance().createProject(descriptor, name);
 
@@ -138,9 +143,6 @@ public class BuildMergeRequestAction implements RootAction {
             public boolean perform(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener)
                     throws InterruptedException, IOException {
 
-                ModelBuilder modelBuilder = new ModelBuilder();
-                StringWriter w = new StringWriter();
-                Model buildModel = modelBuilder.get(build.getClass());
 
                 // we need to exclude any jenkins URLs from the build result.
                 // the first problem is that project is deleted after the build so URLs will be stale anyway
@@ -151,9 +153,26 @@ public class BuildMergeRequestAction implements RootAction {
                 excepts.add("url");
                 TreePruner pruner = new ByDepthWithExcept(0, excepts);
 
+                ModelBuilder modelBuilder = new ModelBuilder();
+                StringWriter w = new StringWriter();
+                Model buildModel = modelBuilder.get(build.getClass());
                 DataWriter dataWriter = Flavor.JSON.createDataWriter(build, w);
                 buildModel.writeTo(build, pruner, dataWriter);
-                String json = w.toString();
+                String buildResult = w.toString();
+
+                StringWriter stringWriter = new StringWriter();
+                build.getLogText().writeLogTo(0, stringWriter);
+                String consoleLog = stringWriter.toString();
+
+                String testResultJson = "null";
+                AbstractTestResultAction testResult = build.getTestResultAction();
+                if (testResult != null) {
+                    Model testResultModel = modelBuilder.get(testResult.getClass());
+                    w = new StringWriter();
+                    DataWriter testResultWriter = Flavor.JSON.createDataWriter(testResult, w);
+                    testResultModel.writeTo(testResult, new TreePruner.ByDepth(0), testResultWriter);
+                    testResultJson = w.toString();
+                }
 
                 String redisHost = descriptor.getRedisHost();
                 if (redisHost == null || redisHost == "") redisHost = DEFAULT_REDIS_HOST;
@@ -163,6 +182,14 @@ public class BuildMergeRequestAction implements RootAction {
                 logger.info("using Redis port: " + redisPort);
 
                 Jedis jedis = new Jedis(redisHost, redisPort);
+
+                String md5 = DigestUtils.md5Hex(buildId + sourceUri + sourceSha + targetUri + targetSha);
+
+                String json = "{\"buildId\": " + buildId + ", " +
+                        "\"md5\": \"" + md5 + "\", " +
+                        "\"buildResult\": " + buildResult + ", " +
+                        "\"testResult\": " + testResultJson + ", " +
+                        "\"consoleLog\": \"" + consoleLog + "\"}";
                 jedis.rpush("resque:gitlab:queue:build_result", json);
 
                 return true;
@@ -182,7 +209,6 @@ public class BuildMergeRequestAction implements RootAction {
         final List<String> excepts;
         private ByDepthWithExcept next;
 
-
         public ByDepthWithExcept(int n, List<String> excepts) {
             this.n = n;
             this.excepts = excepts;
@@ -196,10 +222,8 @@ public class BuildMergeRequestAction implements RootAction {
 
         @Override
         public TreePruner accept(Object node, Property prop) {
-            if (excepts.contains(prop.name)) return null; // except
-
-            if (prop.visibility < n) return null;    // not visible
-
+            if (excepts.contains(prop.name)) return null;
+            if (prop.visibility < n) return null;
             if (prop.inline)    return this;
             return next();
         }
