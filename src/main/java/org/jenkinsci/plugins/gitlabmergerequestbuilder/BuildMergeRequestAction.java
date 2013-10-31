@@ -185,7 +185,7 @@ public class BuildMergeRequestAction implements RootAction {
                 String testResultJson = "null";
                 AbstractTestResultAction testResult = build.getTestResultAction();
                 if (testResult != null) {
-                    logger.info("Found test results. Serializing to JSON...");
+                    logger.info("Found test results. Serializing to JSON.");
 
                     Model testResultModel = modelBuilder.get(testResult.getClass());
                     w = new StringWriter();
@@ -197,10 +197,12 @@ public class BuildMergeRequestAction implements RootAction {
                 FilePath coverageFile = build.getWorkspace().child("coverage/coverage.json");
                 String coverageJson = "null";
                 if (coverageFile.exists()) {
+                    logger.info("Found covegare info in [coverage/coverage.json]. Serializing to JSON.");
                     coverageJson = coverageFile.readToString();
                 } else {
                     FilePath resultsetFile = build.getWorkspace().child("coverage/.resultset.json");
                     if (resultsetFile.exists()) {
+                        logger.info("Found covegare info in [coverage/.resultset.json]. Serializing to JSON.");
                         coverageJson = resultsetFile.readToString();
                     }
                 }
