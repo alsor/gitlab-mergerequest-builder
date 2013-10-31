@@ -31,6 +31,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.logging.Logger;
 
+import hudson.tasks.junit.JUnitResultArchiver;
 import hudson.tasks.test.AbstractTestResultAction;
 import jenkins.model.Jenkins;
 import net.sf.json.JSONObject;
@@ -55,6 +56,7 @@ public class BuildMergeRequestAction implements RootAction {
     private static final Logger logger = Logger.getLogger(BuildMergeRequestAction.class.getName());
     private static final String TARGET_REPO = "targetRepo";
     private static final String SOURCE_REPO = "sourceRepo";
+    private static final String REDIS_KEY = "resque:gitlab:queue:build_result";
     private static final String DEFAULT_REDIS_HOST = "localhost";
     private static final int DEFAULT_REDIS_PORT = 6379;
 
@@ -83,8 +85,12 @@ public class BuildMergeRequestAction implements RootAction {
     }
 
     public void doBuild(StaplerRequest req, StaplerResponse rsp) throws IOException, URISyntaxException {
+        logger.info("Building merge request");
 
-        JSONObject json = JSONObject.fromObject(slurp(req));
+        String reqJson = slurp(req);
+        logger.info("Request JSON: " + reqJson);
+
+        JSONObject json = JSONObject.fromObject(reqJson);
 
         final String buildId = json.getString("build_id");
         final String targetSha = json.getString("target_sha");
@@ -92,11 +98,11 @@ public class BuildMergeRequestAction implements RootAction {
         final String targetUri = json.getString("target_uri");
         final String sourceUri = json.getString("source_uri");
 
-        String name = createUniqueName(buildId);
-
         final RunOnceProject.DescriptorImpl descriptor = Jenkins.getInstance().
                 getDescriptorByType(RunOnceProject.DescriptorImpl.class);
 
+        String name = createUniqueName(buildId);
+        logger.info("Creating RunOnceProject with name [" + name + "]");
         RunOnceProject project = (RunOnceProject) Jenkins.getInstance().createProject(descriptor, name);
 
         List<UserRemoteConfig> userRemoteConfigs = new ArrayList<UserRemoteConfig>();
@@ -115,22 +121,33 @@ public class BuildMergeRequestAction implements RootAction {
                 null,
                 null, null, null, false, false, false, false, null, null, false, null, false, false);
 
-
         project.setScm(scm);
 
         Project existingProject = findProjectByUri(new URIish(targetUri));
         if (existingProject != null) {
+            logger.info("Found existing project [" + existingProject.getName() + "]");
             project.setAssignedLabel(existingProject.getAssignedLabel());
 
             for (Object item : existingProject.getBuilders()) {
-                 project.getBuildersList().add((Builder) item);
+                project.getBuildersList().add((Builder) item);
             }
+
+            for (Object p : existingProject.getPublishersList()) {
+                if (p instanceof JUnitResultArchiver) {
+                    JUnitResultArchiver testResultPublisher = (JUnitResultArchiver) p;
+                    logger.info("Found test results publisher. Collecting results from ["
+                            + testResultPublisher.getTestResults() + "]");
+                    project.getPublishersList().add(testResultPublisher);
+                }
+            }
+
         } else {
             String defaultCommands = "#!/bin/bash -i\n" +
                     "rvm use \"ruby-1.9.3\"\n" +
                     "ENV=test bundle install\n" +
-                    "COVERAGE=true ENV=test bundle exec rake spec";
+                    "COVERAGE=true ENV=test bundle exec rake ci:setup:rspec spec";
             project.getBuildersList().add(new Shell(defaultCommands));
+            project.getPublishersList().add(new JUnitResultArchiver("spec/reports/*.xml", false, null));
         }
 
 
@@ -143,6 +160,7 @@ public class BuildMergeRequestAction implements RootAction {
             public boolean perform(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener)
                     throws InterruptedException, IOException {
 
+                logger.info("Serializing build result to JSON...");
 
                 // we need to exclude any jenkins URLs from the build result.
                 // the first problem is that project is deleted after the build so URLs will be stale anyway
@@ -167,6 +185,8 @@ public class BuildMergeRequestAction implements RootAction {
                 String testResultJson = "null";
                 AbstractTestResultAction testResult = build.getTestResultAction();
                 if (testResult != null) {
+                    logger.info("Found test results. Serializing to JSON...");
+
                     Model testResultModel = modelBuilder.get(testResult.getClass());
                     w = new StringWriter();
                     DataWriter testResultWriter = Flavor.JSON.createDataWriter(testResult, w);
@@ -178,19 +198,17 @@ public class BuildMergeRequestAction implements RootAction {
                 if (redisHost == null || redisHost == "") redisHost = DEFAULT_REDIS_HOST;
                 int redisPort = descriptor.getRedisPort();
                 if (redisPort == 0) redisPort = DEFAULT_REDIS_PORT;
-                logger.info("using Redis host: " + redisHost);
-                logger.info("using Redis port: " + redisPort);
-
-                Jedis jedis = new Jedis(redisHost, redisPort);
+                logger.info("RPushing to key [" + REDIS_KEY + "] with Redis on [" + redisHost + ":" + redisPort + "]");
 
                 String md5 = DigestUtils.md5Hex(buildId + sourceUri + sourceSha + targetUri + targetSha);
-
                 String json = "{\"buildId\": " + buildId + ", " +
                         "\"md5\": \"" + md5 + "\", " +
                         "\"buildResult\": " + buildResult + ", " +
                         "\"testResult\": " + testResultJson + ", " +
                         "\"consoleLog\": \"" + consoleLog + "\"}";
-                jedis.rpush("resque:gitlab:queue:build_result", json);
+
+                Jedis jedis = new Jedis(redisHost, redisPort);
+                jedis.rpush(REDIS_KEY, json);
 
                 return true;
             }
