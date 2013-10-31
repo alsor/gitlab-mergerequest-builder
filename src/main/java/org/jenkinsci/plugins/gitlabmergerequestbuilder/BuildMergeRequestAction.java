@@ -1,6 +1,7 @@
 package org.jenkinsci.plugins.gitlabmergerequestbuilder;
 
 import hudson.Extension;
+import hudson.FilePath;
 import hudson.Launcher;
 import hudson.model.BuildListener;
 import hudson.model.RootAction;
@@ -193,6 +194,17 @@ public class BuildMergeRequestAction implements RootAction {
                     testResultJson = w.toString();
                 }
 
+                FilePath coverageFile = build.getWorkspace().child("coverage/coverage.json");
+                String coverageJson = "null";
+                if (coverageFile.exists()) {
+                    coverageJson = coverageFile.readToString();
+                } else {
+                    FilePath resultsetFile = build.getWorkspace().child("coverage/.resultset.json");
+                    if (resultsetFile.exists()) {
+                        coverageJson = resultsetFile.readToString();
+                    }
+                }
+
                 String redisHost = descriptor.getRedisHost();
                 if (redisHost == null || redisHost == "") redisHost = DEFAULT_REDIS_HOST;
                 int redisPort = descriptor.getRedisPort();
@@ -204,6 +216,7 @@ public class BuildMergeRequestAction implements RootAction {
                         "\"md5\": \"" + md5 + "\", " +
                         "\"buildResult\": " + buildResult + ", " +
                         "\"testResult\": " + testResultJson + ", " +
+                        "\"coverage\": " + coverageJson + ", " +
                         "\"consoleLog\": \"" + consoleLog + "\"}";
 
                 Jedis jedis = new Jedis(redisHost, redisPort);
