@@ -24,8 +24,6 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.net.URISyntaxException;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -59,6 +57,10 @@ public class BuildMergeRequestAction implements RootAction {
     private static final String REDIS_KEY = "resque:gitlab:queue:build_result";
     private static final String DEFAULT_REDIS_HOST = "localhost";
     private static final int DEFAULT_REDIS_PORT = 6379;
+    private static final String DEFAULT_COMMANDS = "#!/bin/bash -i\n" +
+            "rvm use \"ruby-1.9.3\"\n" +
+            "ENV=test bundle install\n" +
+            "COVERAGE=true ENV=test bundle exec rake ci:setup:rspec spec";
 
     public String getIconFileName() {
         return null;
@@ -98,6 +100,8 @@ public class BuildMergeRequestAction implements RootAction {
         final String targetUri = json.getString("target_uri");
         final String sourceUri = json.getString("source_uri");
 
+        Project existingProject = findProjectByUri(new URIish(targetUri));
+
         final RunOnceProject.DescriptorImpl descriptor = Jenkins.getInstance().
                 getDescriptorByType(RunOnceProject.DescriptorImpl.class);
 
@@ -123,7 +127,6 @@ public class BuildMergeRequestAction implements RootAction {
 
         project.setScm(scm);
 
-        Project existingProject = findProjectByUri(new URIish(targetUri));
         if (existingProject != null) {
             logger.info("Found existing project [" + existingProject.getName() + "]");
             project.setAssignedLabel(existingProject.getAssignedLabel());
@@ -142,11 +145,7 @@ public class BuildMergeRequestAction implements RootAction {
             }
 
         } else {
-            String defaultCommands = "#!/bin/bash -i\n" +
-                    "rvm use \"ruby-1.9.3\"\n" +
-                    "ENV=test bundle install\n" +
-                    "COVERAGE=true ENV=test bundle exec rake ci:setup:rspec spec";
-            project.getBuildersList().add(new Shell(defaultCommands));
+            project.getBuildersList().add(new Shell(DEFAULT_COMMANDS));
             project.getPublishersList().add(new JUnitResultArchiver("spec/reports/*.xml", false, null));
         }
 
