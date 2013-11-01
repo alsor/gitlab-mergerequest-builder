@@ -60,8 +60,10 @@ public class BuildMergeRequestAction implements RootAction {
     private static final int DEFAULT_REDIS_PORT = 6379;
     private static final String DEFAULT_COMMANDS = "#!/bin/bash -i\n" +
             "rvm use \"ruby-1.9.3\"\n" +
-            "ENV=test bundle install\n" +
-            "COVERAGE=true ENV=test bundle exec rake ci:setup:rspec spec";
+            "cp config/database.sample.yml config/database.yml\n" +
+            "RAILS_ENV=test bundle install\n" +
+            "RAILS_ENV=test COVERAGE=true bundle exec rake ci:test";
+    public static final String DEFAULT_TEST_RESULTS_LOCATION = "test/reports/*.xml";
 
     public String getIconFileName() {
         return null;
@@ -147,7 +149,7 @@ public class BuildMergeRequestAction implements RootAction {
 
         } else {
             project.getBuildersList().add(new Shell(DEFAULT_COMMANDS));
-            project.getPublishersList().add(new JUnitResultArchiver("spec/reports/*.xml", false, null));
+            project.getPublishersList().add(new JUnitResultArchiver(DEFAULT_TEST_RESULTS_LOCATION, false, null));
         }
 
 
