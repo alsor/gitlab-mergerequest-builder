@@ -23,6 +23,9 @@ public class RunOnceProject extends Project<RunOnceProject, RunOnceBuild> implem
         return (DescriptorImpl) Jenkins.getInstance().getDescriptorOrDie(getClass());
     }
 
+    @Restricted(NoExternalUse.class)
+    public static final DescriptorImpl DESCRIPTOR = new DescriptorImpl();
+
     @Extension(ordinal=1000)
     public static final class DescriptorImpl extends AbstractProjectDescriptor {
 
