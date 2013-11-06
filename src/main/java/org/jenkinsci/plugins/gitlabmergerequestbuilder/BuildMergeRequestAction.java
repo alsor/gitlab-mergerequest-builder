@@ -141,7 +141,7 @@ public class BuildMergeRequestAction implements RootAction {
             for (Object p : existingProject.getPublishersList()) {
                 if (p instanceof JUnitResultArchiver) {
                     JUnitResultArchiver testResultPublisher = (JUnitResultArchiver) p;
-                    logger.info("Found test results publisher. Collecting results from ["
+                    logger.info("Found test results publisher in existing project. Will collect from ["
                             + testResultPublisher.getTestResults() + "]");
                     project.getPublishersList().add(testResultPublisher);
                 }
@@ -223,8 +223,11 @@ public class BuildMergeRequestAction implements RootAction {
                         "\"coverage\": " + coverageJson + ", " +
                         "\"consoleLog\": \"" + consoleLog + "\"}";
 
+                // to comply Sidekiq format
+                String value = "{\"class\":\"CiBuildResultWorker\",\"args\":[" + json + "]}";
+
                 Jedis jedis = new Jedis(redisHost, redisPort);
-                jedis.rpush(REDIS_KEY, json);
+                jedis.rpush(REDIS_KEY, value);
 
                 return true;
             }
