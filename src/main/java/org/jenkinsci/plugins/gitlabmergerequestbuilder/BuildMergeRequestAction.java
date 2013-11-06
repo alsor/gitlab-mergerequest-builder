@@ -3,11 +3,7 @@ package org.jenkinsci.plugins.gitlabmergerequestbuilder;
 import hudson.Extension;
 import hudson.FilePath;
 import hudson.Launcher;
-import hudson.model.BuildListener;
-import hudson.model.RootAction;
-import hudson.model.RunOnceProject;
-import hudson.model.AbstractBuild;
-import hudson.model.Project;
+import hudson.model.*;
 import hudson.plugins.git.BranchSpec;
 import hudson.plugins.git.SubmoduleConfig;
 import hudson.plugins.git.GitSCM;
@@ -50,7 +46,7 @@ import org.kohsuke.stapler.export.TreePruner;
 import redis.clients.jedis.Jedis;
 
 @Extension
-public class BuildMergeRequestAction implements RootAction {
+public class BuildMergeRequestAction implements UnprotectedRootAction {
 
     private static final Logger logger = Logger.getLogger(BuildMergeRequestAction.class.getName());
     private static final String TARGET_REPO = "targetRepo";
