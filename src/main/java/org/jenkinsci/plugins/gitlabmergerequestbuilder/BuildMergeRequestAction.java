@@ -32,6 +32,7 @@ import jenkins.model.Jenkins;
 import net.sf.json.JSONObject;
 
 import org.apache.commons.codec.digest.DigestUtils;
+import org.apache.commons.lang.StringUtils;
 import org.eclipse.jgit.transport.RemoteConfig;
 import org.eclipse.jgit.transport.URIish;
 import org.kohsuke.stapler.StaplerRequest;
@@ -178,7 +179,7 @@ public class BuildMergeRequestAction implements UnprotectedRootAction {
 
                 StringWriter stringWriter = new StringWriter();
                 build.getLogText().writeLogTo(0, stringWriter);
-                String consoleLog = stringWriter.toString();
+                String consoleLog = escape(stringWriter.toString());
 
                 String testResultJson = "null";
                 AbstractTestResultAction testResult = build.getTestResultAction();
@@ -234,6 +235,51 @@ public class BuildMergeRequestAction implements UnprotectedRootAction {
         rsp.getWriter().println("merge request id: " + json.get("mergeRequestId"));
     }
 
+    private static String escape(String s) {
+        StringBuffer sb = new StringBuffer();
+        final int len = s.length();
+        for(int i=0;i<len;i++){
+            char ch=s.charAt(i);
+            switch(ch){
+                case '"':
+                    sb.append("\\\"");
+                    break;
+                case '\\':
+                    sb.append("\\\\");
+                    break;
+                case '\b':
+                    sb.append("\\b");
+                    break;
+                case '\f':
+                    sb.append("\\f");
+                    break;
+                case '\n':
+                    sb.append("\\n");
+                    break;
+                case '\r':
+                    sb.append("\\r");
+                    break;
+                case '\t':
+                    sb.append("\\t");
+                    break;
+                default:
+                    //Reference: http://www.unicode.org/versions/Unicode5.1.0/
+                    if((ch>='\u0000' && ch<='\u001F') || (ch>='\u007F' && ch<='\u009F') || (ch>='\u2000' && ch<='\u20FF')){
+                        String ss=Integer.toHexString(ch);
+                        sb.append("\\u");
+                        for(int k=0;k<4-ss.length();k++){
+                            sb.append('0');
+                        }
+                        sb.append(ss.toUpperCase());
+                    }
+                    else{
+                        sb.append(ch);
+                    }
+            }
+        }
+        return sb.toString();
+    }
+
     // Turns out that the tree-traversing algorithm in the Model is dependent on the fact that the TreePruner
     // object contains some kind of reduction rule to prevent infinite recursion. So we are using ByDepth code here
     // and just adding capabilities to skip properties by name
@@ -269,7 +315,7 @@ public class BuildMergeRequestAction implements UnprotectedRootAction {
                 GitSCM gitSCM = (GitSCM) scm;
                 for (RemoteConfig repository : gitSCM.getRepositories()) {
                     for (URIish existing : repository.getURIs()) {
-                        if (GitStatus.looselyMatches(existing, toFind)) {
+                        if (looselyMatches(existing, toFind)) {
                             return project;
                         }
                     }
@@ -280,6 +326,20 @@ public class BuildMergeRequestAction implements UnprotectedRootAction {
 
         return null;
     }
+
+    private static boolean looselyMatches(URIish lhs, URIish rhs) {
+        return StringUtils.equals(lhs.getHost(), rhs.getHost())
+                && StringUtils.equals(normalizePath(lhs.getPath()), normalizePath(rhs.getPath()));
+    }
+
+    private static String normalizePath(String path) {
+        if (path.startsWith("/"))   path=path.substring(1);
+        if (path.endsWith("/"))     path=path.substring(0,path.length()-1);
+        if (path.endsWith(".git"))  path=path.substring(0,path.length()-4);
+        return path;
+    }
+
+
 
     private static String slurp(StaplerRequest req) throws IOException {
         BufferedReader reader = req.getReader();
