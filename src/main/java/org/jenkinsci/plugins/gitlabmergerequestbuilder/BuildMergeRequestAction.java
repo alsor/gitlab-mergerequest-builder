@@ -1,50 +1,30 @@
 package org.jenkinsci.plugins.gitlabmergerequestbuilder;
 
 import hudson.Extension;
-import hudson.FilePath;
-import hudson.Launcher;
-import hudson.model.*;
-import hudson.plugins.git.BranchSpec;
-import hudson.plugins.git.SubmoduleConfig;
-import hudson.plugins.git.GitSCM;
-import hudson.plugins.git.GitStatus;
-import hudson.plugins.git.UserMergeOptions;
-import hudson.plugins.git.UserRemoteConfig;
+import hudson.model.Project;
+import hudson.model.RunOnceProject;
+import hudson.model.UnprotectedRootAction;
+import hudson.plugins.git.*;
 import hudson.plugins.git.util.DefaultBuildChooser;
-import hudson.scm.SCM;
-import hudson.tasks.BuildStepMonitor;
 import hudson.tasks.Builder;
-import hudson.tasks.Notifier;
 import hudson.tasks.Shell;
+import hudson.tasks.junit.JUnitResultArchiver;
+import jenkins.model.Jenkins;
+import net.sf.json.JSONObject;
+import org.eclipse.jgit.transport.URIish;
+import org.kohsuke.stapler.StaplerRequest;
+import org.kohsuke.stapler.StaplerResponse;
 
-import java.io.BufferedReader;
+import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
-import java.io.StringWriter;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.logging.Logger;
 
-import hudson.tasks.junit.JUnitResultArchiver;
-import hudson.tasks.test.AbstractTestResultAction;
-import jenkins.model.Jenkins;
-import net.sf.json.JSONObject;
+import static org.jenkinsci.plugins.gitlabmergerequestbuilder.Utils.*;
 
-import org.apache.commons.codec.digest.DigestUtils;
-import org.apache.commons.lang.StringUtils;
-import org.eclipse.jgit.transport.RemoteConfig;
-import org.eclipse.jgit.transport.URIish;
-import org.kohsuke.stapler.StaplerRequest;
-import org.kohsuke.stapler.StaplerResponse;
-import org.kohsuke.stapler.export.DataWriter;
-import org.kohsuke.stapler.export.Flavor;
-import org.kohsuke.stapler.export.Model;
-import org.kohsuke.stapler.export.ModelBuilder;
-import org.kohsuke.stapler.export.Property;
-import org.kohsuke.stapler.export.TreePruner;
-
-import redis.clients.jedis.Jedis;
 
 @Extension
 public class BuildMergeRequestAction implements UnprotectedRootAction {
@@ -52,14 +32,13 @@ public class BuildMergeRequestAction implements UnprotectedRootAction {
     private static final Logger logger = Logger.getLogger(BuildMergeRequestAction.class.getName());
     private static final String TARGET_REPO = "targetRepo";
     private static final String SOURCE_REPO = "sourceRepo";
-    private static final String REDIS_KEY = "resque:gitlab:queue:build_result";
-    private static final String DEFAULT_REDIS_HOST = "localhost";
-    private static final int DEFAULT_REDIS_PORT = 6379;
+
     private static final String DEFAULT_COMMANDS = "#!/bin/bash -i\n" +
             "rvm use \"ruby-1.9.3\"\n" +
             "cp config/database.sample.yml config/database.yml\n" +
             "RAILS_ENV=test bundle install\n" +
             "RAILS_ENV=test COVERAGE=true bundle exec rake ci:test";
+
     public static final String DEFAULT_TEST_RESULTS_LOCATION = "test/reports/*.xml";
 
     public String getIconFileName() {
@@ -94,15 +73,16 @@ public class BuildMergeRequestAction implements UnprotectedRootAction {
 
         JSONObject json = JSONObject.fromObject(reqJson);
 
-        final String buildId = json.getString("build_id");
-        final String targetSha = json.getString("target_sha");
-        final String sourceSha = json.getString("source_sha");
-        final String targetUri = json.getString("target_uri");
-        final String sourceUri = json.getString("source_uri");
+        String buildId = getStringOrNull(json, "build_id");
+        String targetBranch = getStringOrNull(json, "target_branch");
+        String sourceBranch = getStringOrNull(json, "source_branch");
+        String sourceSha = getStringOrNull(json, "source_sha");
+        String targetUri = getStringOrNull(json, "target_uri");
+        String sourceUri = getStringOrNull(json, "source_uri");
 
         Project existingProject = findProjectByUri(new URIish(targetUri));
 
-        final RunOnceProject.DescriptorImpl descriptor = Jenkins.getInstance().
+        RunOnceProject.DescriptorImpl descriptor = Jenkins.getInstance().
                 getDescriptorByType(RunOnceProject.DescriptorImpl.class);
 
         String name = createUniqueName(buildId);
@@ -114,9 +94,9 @@ public class BuildMergeRequestAction implements UnprotectedRootAction {
         userRemoteConfigs.add(new UserRemoteConfig(sourceUri, SOURCE_REPO, null));
 
         List<BranchSpec> branches = new ArrayList<BranchSpec>();
-        branches.add(new BranchSpec(SOURCE_REPO + "/" + sourceSha));
+        branches.add(new BranchSpec(SOURCE_REPO + "/" + sourceBranch));
 
-        UserMergeOptions userMergeOptions = new UserMergeOptions(TARGET_REPO, targetSha);
+        UserMergeOptions userMergeOptions = new UserMergeOptions(TARGET_REPO, targetBranch);
 
         GitSCM scm = new GitSCM(null, userRemoteConfigs, branches,
                 userMergeOptions,
@@ -149,207 +129,16 @@ public class BuildMergeRequestAction implements UnprotectedRootAction {
             project.getPublishersList().add(new JUnitResultArchiver(DEFAULT_TEST_RESULTS_LOCATION, false, null));
         }
 
+        String md5 = md5(buildId, targetBranch, sourceBranch, sourceSha, targetUri, sourceUri);
+        project.getPublishersList().add(new RedisNotifier(buildId, md5));
 
-        project.getPublishersList().add(new Notifier() {
-            public BuildStepMonitor getRequiredMonitorService() {
-                return BuildStepMonitor.NONE;
-            }
-
-            @Override
-            public boolean perform(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener)
-                    throws InterruptedException, IOException {
-
-                logger.info("Serializing build result to JSON...");
-
-                // we need to exclude any jenkins URLs from the build result.
-                // the first problem is that project is deleted after the build so URLs will be stale anyway
-                // and the second problem is that if Jenkins web location is not configured in the global settings
-                // then we will get an exception trying to determine absolute URL
-                List<String> excepts = new ArrayList<String>();
-                excepts.add("absoluteUrl");
-                excepts.add("url");
-                TreePruner pruner = new ByDepthWithExcept(0, excepts);
-
-                ModelBuilder modelBuilder = new ModelBuilder();
-                StringWriter w = new StringWriter();
-                Model buildModel = modelBuilder.get(build.getClass());
-                DataWriter dataWriter = Flavor.JSON.createDataWriter(build, w);
-                buildModel.writeTo(build, pruner, dataWriter);
-                String buildResult = w.toString();
-
-                StringWriter stringWriter = new StringWriter();
-                build.getLogText().writeLogTo(0, stringWriter);
-                String consoleLog = escape(stringWriter.toString());
-
-                String testResultJson = "null";
-                AbstractTestResultAction testResult = build.getTestResultAction();
-                if (testResult != null) {
-                    logger.info("Found test results. Serializing to JSON.");
-
-                    Model testResultModel = modelBuilder.get(testResult.getClass());
-                    w = new StringWriter();
-                    DataWriter testResultWriter = Flavor.JSON.createDataWriter(testResult, w);
-                    testResultModel.writeTo(testResult, new TreePruner.ByDepth(0), testResultWriter);
-                    testResultJson = w.toString();
-                }
-
-                FilePath coverageFile = build.getWorkspace().child("coverage/coverage.json");
-                String coverageJson = "null";
-                if (coverageFile.exists()) {
-                    logger.info("Found covegare info in [coverage/coverage.json]. Serializing to JSON.");
-                    coverageJson = coverageFile.readToString();
-                } else {
-                    FilePath resultsetFile = build.getWorkspace().child("coverage/.resultset.json");
-                    if (resultsetFile.exists()) {
-                        logger.info("Found covegare info in [coverage/.resultset.json]. Serializing to JSON.");
-                        coverageJson = resultsetFile.readToString();
-                    }
-                }
-
-                String redisHost = descriptor.getRedisHost();
-                if (redisHost == null || redisHost == "") redisHost = DEFAULT_REDIS_HOST;
-                int redisPort = descriptor.getRedisPort();
-                if (redisPort == 0) redisPort = DEFAULT_REDIS_PORT;
-                logger.info("RPushing to key [" + REDIS_KEY + "] with Redis on [" + redisHost + ":" + redisPort + "]");
-
-                String md5 = DigestUtils.md5Hex(buildId + sourceUri + sourceSha + targetUri + targetSha);
-                String json = "{\"buildId\": " + buildId + ", " +
-                        "\"md5\": \"" + md5 + "\", " +
-                        "\"buildResult\": " + buildResult + ", " +
-                        "\"testResult\": " + testResultJson + ", " +
-                        "\"coverage\": " + coverageJson + ", " +
-                        "\"consoleLog\": \"" + consoleLog + "\"}";
-
-                // to comply Sidekiq format
-                String value = "{\"class\":\"CiBuildResultWorker\",\"args\":[" + json + "]}";
-
-                Jedis jedis = new Jedis(redisHost, redisPort);
-                jedis.rpush(REDIS_KEY, value);
-
-                return true;
-            }
-        });
-
-        project.scheduleBuild(null);
-
-        rsp.getWriter().println("merge request id: " + json.get("mergeRequestId"));
-    }
-
-    private static String escape(String s) {
-        StringBuffer sb = new StringBuffer();
-        final int len = s.length();
-        for(int i=0;i<len;i++){
-            char ch=s.charAt(i);
-            switch(ch){
-                case '"':
-                    sb.append("\\\"");
-                    break;
-                case '\\':
-                    sb.append("\\\\");
-                    break;
-                case '\b':
-                    sb.append("\\b");
-                    break;
-                case '\f':
-                    sb.append("\\f");
-                    break;
-                case '\n':
-                    sb.append("\\n");
-                    break;
-                case '\r':
-                    sb.append("\\r");
-                    break;
-                case '\t':
-                    sb.append("\\t");
-                    break;
-                default:
-                    //Reference: http://www.unicode.org/versions/Unicode5.1.0/
-                    if((ch>='\u0000' && ch<='\u001F') || (ch>='\u007F' && ch<='\u009F') || (ch>='\u2000' && ch<='\u20FF')){
-                        String ss=Integer.toHexString(ch);
-                        sb.append("\\u");
-                        for(int k=0;k<4-ss.length();k++){
-                            sb.append('0');
-                        }
-                        sb.append(ss.toUpperCase());
-                    }
-                    else{
-                        sb.append(ch);
-                    }
-            }
-        }
-        return sb.toString();
-    }
-
-    // Turns out that the tree-traversing algorithm in the Model is dependent on the fact that the TreePruner
-    // object contains some kind of reduction rule to prevent infinite recursion. So we are using ByDepth code here
-    // and just adding capabilities to skip properties by name
-    public static class ByDepthWithExcept extends TreePruner {
-        final int n;
-        final List<String> excepts;
-        private ByDepthWithExcept next;
-
-        public ByDepthWithExcept(int n, List<String> excepts) {
-            this.n = n;
-            this.excepts = excepts;
+        if (sourceSha != null && sourceSha.trim() != "") {
+            project.scheduleBuild(0, null, new RevisionParameterAction(sourceSha, false));
+        } else {
+            project.scheduleBuild(null);
         }
 
-        private ByDepthWithExcept next() {
-            if (next==null)
-                next = new ByDepthWithExcept(n+1, excepts);
-            return next;
-        }
-
-        @Override
-        public TreePruner accept(Object node, Property prop) {
-            if (excepts.contains(prop.name)) return null;
-            if (prop.visibility < n) return null;
-            if (prop.inline)    return this;
-            return next();
-        }
+        rsp.setStatus(HttpServletResponse.SC_OK);
     }
 
-    private static Project findProjectByUri(URIish toFind) {
-        for (Project project : Jenkins.getInstance().getAllItems(Project.class)) {
-            SCM scm = project.getScm();
-            if (scm instanceof GitSCM) {
-                GitSCM gitSCM = (GitSCM) scm;
-                for (RemoteConfig repository : gitSCM.getRepositories()) {
-                    for (URIish existing : repository.getURIs()) {
-                        if (looselyMatches(existing, toFind)) {
-                            return project;
-                        }
-                    }
-
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private static boolean looselyMatches(URIish lhs, URIish rhs) {
-        return StringUtils.equals(lhs.getHost(), rhs.getHost())
-                && StringUtils.equals(normalizePath(lhs.getPath()), normalizePath(rhs.getPath()));
-    }
-
-    private static String normalizePath(String path) {
-        if (path.startsWith("/"))   path=path.substring(1);
-        if (path.endsWith("/"))     path=path.substring(0,path.length()-1);
-        if (path.endsWith(".git"))  path=path.substring(0,path.length()-4);
-        return path;
-    }
-
-
-
-    private static String slurp(StaplerRequest req) throws IOException {
-        BufferedReader reader = req.getReader();
-        StringBuilder builder = new StringBuilder();
-        String aux;
-
-        while ((aux = reader.readLine()) != null) {
-            builder.append(aux);
-        }
-
-        return builder.toString();
-    }
 }
