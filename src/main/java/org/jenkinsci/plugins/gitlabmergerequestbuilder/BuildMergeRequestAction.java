@@ -1,6 +1,7 @@
 package org.jenkinsci.plugins.gitlabmergerequestbuilder;
 
 import hudson.Extension;
+import hudson.model.GitlabCause;
 import hudson.model.Project;
 import hudson.model.RunOnceProject;
 import hudson.model.UnprotectedRootAction;
@@ -130,12 +131,14 @@ public class BuildMergeRequestAction implements UnprotectedRootAction {
         }
 
         String md5 = md5(buildId, targetBranch, sourceBranch, sourceSha, targetUri, sourceUri);
-        project.getPublishersList().add(new RedisNotifier(buildId, md5));
+        GitlabCause cause = new GitlabCause(buildId, md5);
+
+        project.getPublishersList().add(new RedisNotifier());
 
         if (sourceSha != null && sourceSha.trim() != "") {
-            project.scheduleBuild(0, null, new RevisionParameterAction(sourceSha, false));
+            project.scheduleBuild(0, cause, new RevisionParameterAction(sourceSha, false));
         } else {
-            project.scheduleBuild(null);
+            project.scheduleBuild(cause);
         }
 
         rsp.setStatus(HttpServletResponse.SC_OK);

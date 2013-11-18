@@ -4,6 +4,7 @@ import hudson.FilePath;
 import hudson.Launcher;
 import hudson.model.AbstractBuild;
 import hudson.model.BuildListener;
+import hudson.model.GitlabCause;
 import hudson.model.RunOnceProject;
 import hudson.tasks.BuildStepMonitor;
 import hudson.tasks.Notifier;
@@ -26,14 +27,6 @@ public class RedisNotifier extends Notifier {
     private static final int DEFAULT_REDIS_PORT = 6379;
 
     private static final Logger logger = Logger.getLogger(RedisNotifier.class.getName());
-    private final String buildId;
-    private final String md5;
-
-    public RedisNotifier(String buildId, String md5) {
-        this.buildId = buildId;
-        this.md5 = md5;
-    }
-
 
     public BuildStepMonitor getRequiredMonitorService() {
         return BuildStepMonitor.NONE;
@@ -42,6 +35,9 @@ public class RedisNotifier extends Notifier {
     @Override
     public boolean perform(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener)
             throws InterruptedException, IOException {
+
+        GitlabCause cause = build.getCause(GitlabCause.class);
+        if (cause == null) return true;
 
         logger.info("Serializing build result to JSON...");
 
@@ -101,8 +97,8 @@ public class RedisNotifier extends Notifier {
         logger.info("RPushing to key [" + REDIS_KEY + "] with Redis" +
                 " on [" + redisHost + ":" + redisPort + "]");
 
-        String json = "{\"buildId\": " + buildId + ", " +
-                "\"md5\": \"" + md5 + "\", " +
+        String json = "{\"buildId\": " + cause.buildId + ", " +
+                "\"md5\": \"" + cause.md5 + "\", " +
                 "\"buildResult\": " + buildResult + ", " +
                 "\"testResult\": " + testResultJson + ", " +
                 "\"coverage\": " + coverageJson + ", " +
