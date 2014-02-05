@@ -134,6 +134,7 @@ public class BuildMergeRequestAction implements UnprotectedRootAction {
         GitlabCause cause = new GitlabCause(buildId, md5);
 
         project.getPublishersList().add(new RedisNotifier());
+        project.getPublishersList().add(new WorkspaceCleanup());
 
         if (sourceSha != null && sourceSha.trim() != "") {
             project.scheduleBuild(0, cause, new RevisionParameterAction(sourceSha, false));
