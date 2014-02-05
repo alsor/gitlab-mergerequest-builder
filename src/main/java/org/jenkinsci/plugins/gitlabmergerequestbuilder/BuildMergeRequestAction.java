@@ -81,7 +81,7 @@ public class BuildMergeRequestAction implements UnprotectedRootAction {
         String targetUri = getStringOrNull(json, "target_uri");
         String sourceUri = getStringOrNull(json, "source_uri");
 
-        Project existingProject = findProjectByUri(new URIish(targetUri));
+        Project existingProject = findExistingProject(new URIish(targetUri), targetBranch);
 
         RunOnceProject.DescriptorImpl descriptor = Jenkins.getInstance().
                 getDescriptorByType(RunOnceProject.DescriptorImpl.class);

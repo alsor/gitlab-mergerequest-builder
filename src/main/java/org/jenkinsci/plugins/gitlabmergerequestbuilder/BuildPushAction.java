@@ -47,9 +47,10 @@ public class BuildPushAction implements UnprotectedRootAction {
         JSONObject json = JSONObject.fromObject(reqJson);
         String uri = getStringOrNull(json, "uri");
         String sha = getStringOrNull(json, "sha");
+        String branch = getStringOrNull(json, "branch");
         String buildId = getStringOrNull(json, "build_id");
 
-        Project project = findProjectByUri(new URIish(uri));
+        Project project = findExistingProject(new URIish(uri), branch);
         if (project == null) {
             logger.info("No projects found with repository [" + uri + "]");
             return;

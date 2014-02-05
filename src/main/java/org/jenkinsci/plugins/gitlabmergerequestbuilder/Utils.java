@@ -1,6 +1,7 @@
 package org.jenkinsci.plugins.gitlabmergerequestbuilder;
 
 import hudson.model.Project;
+import hudson.plugins.git.BranchSpec;
 import hudson.plugins.git.GitSCM;
 import hudson.scm.SCM;
 import jenkins.model.Jenkins;
@@ -13,8 +14,12 @@ import org.kohsuke.stapler.StaplerRequest;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.util.List;
+import java.util.logging.Logger;
 
 public class Utils {
+
+    private static final Logger logger = Logger.getLogger(Utils.class.getName());
 
     public static String escape(String s) {
         StringBuffer sb = new StringBuffer();
@@ -66,15 +71,41 @@ public class Utils {
                 (ch >= '\u2000' && ch<='\u20FF');
     }
 
-    public static Project findProjectByUri(URIish toFind) {
+    public static Project findExistingProject(URIish toFind, String branch) {
+        Project wideMatch = null;
+        Project narrowMatch = null;
+
         for (Project project : Jenkins.getInstance().getAllItems(Project.class)) {
+
             SCM scm = project.getScm();
             if (scm instanceof GitSCM) {
                 GitSCM gitSCM = (GitSCM) scm;
+
                 for (RemoteConfig repository : gitSCM.getRepositories()) {
+
+                    boolean urlMatch = false;
                     for (URIish existing : repository.getURIs()) {
                         if (looselyMatches(existing, toFind)) {
-                            return project;
+                            urlMatch = true;
+                            break;
+                        }
+                    }
+
+                    if (urlMatch) {
+                        List<BranchSpec> branchSpecs = gitSCM.getBranches();
+
+                        if (wideMatch == null && branchSpecs.isEmpty()) {
+                            logger.info("Wide match project [" + project.getName() + "]");
+                            wideMatch = project;
+                        }
+
+                        if (narrowMatch == null) {
+                            for (BranchSpec branchSpec : branchSpecs) {
+                                if (branchSpec.matches(repository.getName() + "/" + branch)) {
+                                    logger.info("Narrow match project [" + project.getName() + "] by branch spec [" + branchSpec.getName() + "]");
+                                    narrowMatch = project;
+                                }
+                            }
                         }
                     }
 
@@ -82,7 +113,7 @@ public class Utils {
             }
         }
 
-        return null;
+        return narrowMatch != null ? narrowMatch : wideMatch;
     }
 
     public static boolean looselyMatches(URIish lhs, URIish rhs) {
