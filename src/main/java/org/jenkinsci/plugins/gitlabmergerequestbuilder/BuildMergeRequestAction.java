@@ -6,6 +6,8 @@ import hudson.model.Project;
 import hudson.model.RunOnceProject;
 import hudson.model.UnprotectedRootAction;
 import hudson.plugins.git.*;
+import hudson.plugins.git.extensions.GitSCMExtension;
+import hudson.plugins.git.extensions.impl.PreBuildMerge;
 import hudson.plugins.git.util.DefaultBuildChooser;
 import hudson.tasks.Builder;
 import hudson.tasks.Shell;
@@ -13,6 +15,7 @@ import hudson.tasks.junit.JUnitResultArchiver;
 import jenkins.model.Jenkins;
 import net.sf.json.JSONObject;
 import org.eclipse.jgit.transport.URIish;
+import org.jenkinsci.plugins.gitclient.MergeCommand;
 import org.kohsuke.stapler.StaplerRequest;
 import org.kohsuke.stapler.StaplerResponse;
 
@@ -91,20 +94,28 @@ public class BuildMergeRequestAction implements UnprotectedRootAction {
         RunOnceProject project = (RunOnceProject) Jenkins.getInstance().createProject(descriptor, name);
 
         List<UserRemoteConfig> userRemoteConfigs = new ArrayList<UserRemoteConfig>();
-        userRemoteConfigs.add(new UserRemoteConfig(targetUri, TARGET_REPO, null));
-        userRemoteConfigs.add(new UserRemoteConfig(sourceUri, SOURCE_REPO, null));
+        userRemoteConfigs.add(new UserRemoteConfig(targetUri, TARGET_REPO, null, null));
+        userRemoteConfigs.add(new UserRemoteConfig(sourceUri, SOURCE_REPO, null, null));
 
         List<BranchSpec> branches = new ArrayList<BranchSpec>();
         branches.add(new BranchSpec(SOURCE_REPO + "/" + sourceBranch));
 
-        UserMergeOptions userMergeOptions = new UserMergeOptions(TARGET_REPO, targetBranch);
+        UserMergeOptions userMergeOptions = new UserMergeOptions(
+                TARGET_REPO,
+                targetBranch,
+                MergeCommand.Strategy.DEFAULT.toString());
 
-        GitSCM scm = new GitSCM(null, userRemoteConfigs, branches,
-                userMergeOptions,
-                false, Collections.<SubmoduleConfig>emptyList(), false,
-                false, new DefaultBuildChooser(), null, null, false, null,
+        List<GitSCMExtension> extensions = new ArrayList<GitSCMExtension>();
+        extensions.add(new PreBuildMerge(userMergeOptions));
+
+        GitSCM scm = new GitSCM(
+                userRemoteConfigs,
+                branches,
+                false,
+                Collections.<SubmoduleConfig>emptyList(),
                 null,
-                null, null, null, false, false, false, false, null, null, false, null, false, false);
+                null,
+                extensions);
 
         project.setScm(scm);
 
