@@ -1,13 +1,11 @@
 package org.jenkinsci.plugins.gitlabmergerequestbuilder;
 
 import hudson.Extension;
-import hudson.model.GitlabCause;
-import hudson.model.Project;
-import hudson.model.RunOnceProject;
-import hudson.model.UnprotectedRootAction;
+import hudson.model.*;
 import hudson.plugins.git.*;
 import hudson.plugins.git.extensions.GitSCMExtension;
 import hudson.plugins.git.extensions.impl.PreBuildMerge;
+import hudson.plugins.git.extensions.impl.SubmoduleOption;
 import hudson.plugins.git.util.DefaultBuildChooser;
 import hudson.tasks.Builder;
 import hudson.tasks.Shell;
@@ -108,19 +106,31 @@ public class BuildMergeRequestAction implements UnprotectedRootAction {
         List<GitSCMExtension> extensions = new ArrayList<GitSCMExtension>();
         extensions.add(new PreBuildMerge(userMergeOptions));
 
-        GitSCM scm = new GitSCM(
-                userRemoteConfigs,
-                branches,
-                false,
-                Collections.<SubmoduleConfig>emptyList(),
-                null,
-                null,
-                extensions);
-
-        project.setScm(scm);
-
         if (existingProject != null) {
             logger.info("Found existing project [" + existingProject.getName() + "]");
+
+
+            AbstractProject upstream = null;
+            // if we already have MR project - it will be our upstream
+            List<AbstractProject> downstreamProjects = existingProject.getDownstreamProjects();
+            if (downstreamProjects != null) {
+                for (AbstractProject p : downstreamProjects) {
+                    if (p instanceof RunOnceProject) {
+                        upstream = p;
+                        break;
+                    }
+                }
+            }
+            if (upstream == null) upstream = existingProject;
+            // this is how we link two projects as upstream/downstream
+            project.getPublishersList().add(new SetAsDownstreamOf(upstream));
+            Jenkins.getInstance().rebuildDependencyGraph();
+            upstream.setBlockBuildWhenDownstreamBuilding(true);
+            project.setBlockBuildWhenUpstreamBuilding(true);
+
+
+
+
             project.setAssignedLabel(existingProject.getAssignedLabel());
 
             for (Object item : existingProject.getBuilders()) {
@@ -136,10 +146,28 @@ public class BuildMergeRequestAction implements UnprotectedRootAction {
                 }
             }
 
+            GitSCM gitSCM = (GitSCM) existingProject.getScm();
+            SubmoduleOption sm = gitSCM.getExtensions().get(SubmoduleOption.class);
+            if (sm != null) {
+                extensions.add(sm);
+            }
+
         } else {
             project.getBuildersList().add(new Shell(DEFAULT_COMMANDS));
             project.getPublishersList().add(new JUnitResultArchiver(DEFAULT_TEST_RESULTS_LOCATION, false, null));
         }
+
+        GitSCM scm = new GitSCM(
+                userRemoteConfigs,
+                branches,
+                false,
+                Collections.<SubmoduleConfig>emptyList(),
+                null,
+                null,
+                extensions);
+
+        project.setScm(scm);
+
 
         String md5 = md5(buildId, targetBranch, sourceBranch, sourceSha, targetUri, sourceUri);
         GitlabCause cause = new GitlabCause(buildId, md5);
